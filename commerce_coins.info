@@ -1,0 +1,7 @@
+name = Payment Method Coins
+description = Provides a Devcoins/Bitcoins payment method for the commerce module.
+package = Commerce
+dependencies[] = commerce
+dependencies[] = commerce_payment
+dependencies[] = libraries
+core = 7.x

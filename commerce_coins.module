@@ -1,0 +1,351 @@
+<?php
+
+/**
+ * @file
+ * Provides a Devcoins/Bitcoins payment method for the commerce module.
+ *
+ * @author ssm2017 Binder
+ *
+ * @license GNU/GPL, http://www.gnu.org/licenses/gpl-2.0.html
+ * Commerce coins is free software. This version may have been modified pursuant
+ * to the GNU General Public License, and as distributed it includes or
+ * is derivative of works licensed under the GNU General Public License or
+ * other free or open source software licenses.
+ */
+
+define('COMMERCE_COINS_DEFAULT_SERVER_SCHEME', 'http');
+define('COMMERCE_COINS_DEFAULT_SERVER_HOST', 'localhost');
+define('COMMERCE_COINS_DEFAULT_SERVER_PORT', '8332');
+define('COMMERCE_COINS_DEFAULT_SERVER_USERNAME', 'rpcuser');
+define('COMMERCE_COINS_DEFAULT_SERVER_PASSWORD', 'password');
+
+/**
+ * Get the server object
+ */
+function _commerce_coins_get_server($params=NULL) {
+  if (!is_array($params)) {
+    $params = array(
+      'server_scheme' => COMMERCE_COINS_DEFAULT_SERVER_SCHEME,
+      'server_host' => COMMERCE_COINS_DEFAULT_SERVER_HOST,
+      'server_port' => COMMERCE_COINS_DEFAULT_SERVER_PORT,
+      'server_username' => COMMERCE_COINS_DEFAULT_SERVER_USERNAME,
+      'server_password' => COMMERCE_COINS_DEFAULT_SERVER_PASSWORD,
+      'server_key_file' => ''
+    );
+  }
+  $bitcon_php_path = libraries_get_path("bitcoin-php", TRUE);
+  require_once DRUPAL_ROOT. $bitcon_php_path. '/src/bitcoin.inc';
+  $bitcoin_client = new BitcoinClient(
+      $params['server_scheme'],
+      $params['server_username'],
+      $params['server_password'],
+      $params['server_host'],
+      $params['server_port'],
+      isset($params['server_key_file']) ? $params['server_key_file'] : '');
+  if (is_object($bitcoin_client)) {
+    return $bitcoin_client;
+  }
+  else {
+    return NULL;
+  }
+}
+
+/**
+ * Implements hook_commerce_payment_method_info().
+ */
+function commerce_coins_commerce_payment_method_info() {
+  $payment_methods = array();
+  $payment_methods['commerce_coins'] = array(
+    'title' => t('Coins'),
+    'description' => t('Allows the people to use Devcoins or Bitcoins as a payment currency.'),
+    'active' => TRUE,
+  );
+  return $payment_methods;
+}
+
+/**
+ * Implements hook_commerce_currency_info().
+ */
+function commerce_coins_commerce_currency_info() {
+  return array(
+    'BTC' => array(
+      'code' => 'BTC',
+      'symbol' => 'BTC',
+      'name' => t('Bitcoin'),
+      'decimals' => 8,
+      'numeric_code' => '',
+      'symbol_placement' => 'after',
+      'code_placement' => '',
+      'minor_unit' => t('Coins'),
+      'major_unit' => t('Coins')
+    ),
+    'DVC' => array(
+      'code' => 'DVC',
+      'symbol' => 'φ',
+      'name' => t('Devcoin'),
+      'decimals' => 8,
+      'numeric_code' => '',
+      'symbol_placement' => 'after',
+      'code_placement' => '',
+      'minor_unit' => t('Coins'),
+      'major_unit' => t('Coins')
+    ),
+  );
+}
+
+/**
+ * Payment method callback: submit form.
+ */
+function commerce_coins_submit_form($payment_method, $pane_values, $checkout_pane, $order) {
+  $form = array();
+
+  // Merge in values from the order.
+  if (!empty($order->data['commerce_coins'])) {
+    $pane_values += $order->data['commerce_coins'];
+  }
+
+  // Merge in default values.
+  $pane_values += array(
+    'name' => '',
+  );
+
+  $form['name'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Order name'),
+    '#description' => t('Here you can enter an order name to find it later.'),
+    '#default_value' => $pane_values['name'],
+    '#required' => FALSE,
+  );
+
+  return $form;
+}
+
+/**
+ * Payment method callback: submit form validation.
+ */
+function commerce_coins_submit_form_validate($payment_method, $pane_form, $pane_values, $order, $form_parents = array()) {
+  // check if the coinsd is alive
+  $server = _commerce_coins_get_server($payment_method['settings']['server']);
+  if (TRUE !== ($fault = $server->can_connect())) {
+    form_set_error('', t('You can not use this payment method now. Please try again later'));
+    watchdog('commerce_coins_order_validate', 'Unable to access coins server. Fault: !fault', $fault);
+    return FALSE;
+  }
+}
+
+/**
+ * Payment method callback: submit form submission.
+ */
+function commerce_coins_submit_form_submit($payment_method, $pane_form, $pane_values, $order, $charge) {
+  $order->data['commerce_coins'] = $pane_values;
+  commerce_coins_transaction($payment_method, $order, $charge, $pane_values['name']);
+}
+
+/**
+ * Creates a payment transaction for the specified charge amount.
+ *
+ * @param $payment_method
+ *   The payment method instance object used to charge this payment.
+ * @param $order
+ *   The order object the payment applies to.
+ * @param $charge
+ *   An array indicating the amount and currency code to charge.
+ * @param $name
+ *   The name entered on the submission form.
+ */
+function commerce_coins_transaction($payment_method, $order, $charge, $name) {
+  $transaction = commerce_payment_transaction_new('commerce_coins', $order->order_id);
+  $transaction->instance_id = $payment_method['instance_id'];
+  $transaction->amount = $charge['amount'];
+  $transaction->currency_code = $charge['currency_code'];
+  $transaction->status = COMMERCE_PAYMENT_STATUS_PENDING;
+  $transaction->message = 'Name: @name';
+  $transaction->message_variables = array('@name' => $name);
+  // get a new address from the coinsd
+  $server = _commerce_coins_get_server($payment_method['settings']['server']);
+  // build the address label
+  $label_data = array(
+    'order_link' => $GLOBALS['base_url']. 'admin/commerce/orders/'. $order->order_id,
+    'timestamp' => time()
+  );
+  $address_label = drupal_json_encode($label_data);
+  // get a new address
+  $address = $server->getNewAddress($address_label);
+  $transaction->remote_id = $address;
+  $transaction->remote_status = '';
+
+  commerce_payment_transaction_save($transaction);
+}
+
+/**
+ * Returns the default settings for the Coins payment method.
+ */
+function commerce_coins_default_settings() {
+  return array(
+    'server_scheme' => COMMERCE_COINS_DEFAULT_SERVER_SCHEME,
+    'server_host' => COMMERCE_COINS_DEFAULT_SERVER_HOST,
+    'server_port' => COMMERCE_COINS_DEFAULT_SERVER_PORT,
+    'server_username' => COMMERCE_COINS_DEFAULT_SERVER_USERNAME,
+    'server_password' => COMMERCE_COINS_DEFAULT_SERVER_PASSWORD,
+    'transaction_timeout' => 72,
+    'transaction_confirms' => 1
+  );
+}
+
+/**
+ * Payment method callback: settings form.
+ */
+function commerce_coins_settings_form($settings = array()) {
+  $form = array();
+
+  // Merge default settings into the stored settings array.
+  $settings = (array) $settings + commerce_coins_default_settings();
+
+  // server config
+  $form['server'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Server config'),
+    '#description' => t('Set the server config.'),
+    '#collapsible' => TRUE,
+    '#collapsed' => FALSE,
+  );
+  $form['server']['server_scheme'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Scheme'),
+    '#default_value' => $settings['server_scheme'],
+    '#description' => t('Enter the server scheme.')
+  );
+  $form['server']['server_host'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Host'),
+    '#default_value' => $settings['server_host'],
+    '#description' => t('Enter the server host.')
+  );
+  $form['server']['server_port'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Port'),
+    '#default_value' => $settings['server_port'],
+    '#description' => t('Enter the server port.')
+  );
+  $form['server']['server_username'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Username'),
+    '#default_value' => $settings['server_username'],
+    '#description' => t('Enter the server username.')
+  );
+  $form['server']['server_password'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Password'),
+    '#default_value' => $settings['server_password'],
+    '#description' => t('Enter the server password.')
+  );
+
+  // transaction config
+  $form['transaction'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Transaction settings'),
+    '#collapsible' => TRUE,
+    '#collapsed' => FALSE,
+  );
+  $form['transaction']['transaction_timeout'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Transaction timeout (hours)'),
+    '#default_value' => $settings['transaction_timeout'],
+    '#description' => t('Transactions not paid for within this number of hours will be automatically cancelled. Decimals are permitted.'),
+  );
+  $form['transaction']['transaction_confirms'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Transaction confirmations'),
+    '#default_value' => $settings['transaction_confirms'],
+    '#description' => t('Minimum number of coins transaction network confirmations required before a payment is considered accepted.'),
+  );
+
+  return system_settings_form($form);
+}
+
+/**
+ * Implements hook_form_alter()
+ */
+function commerce_coins_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id == 'rules_ui_edit_element') {
+    if (isset($form_state['element_settings']['payment_method']['method_id'])){
+      if ($form_state['element_settings']['payment_method']['method_id'] == 'commerce_coins') {
+        $form['#validate'][] = 'commerce_coins_settings_form_validate';
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_form_validate()
+ */
+function commerce_coins_settings_form_validate(&$form, &$form_state) {
+  $settings = $form_state['values']['parameter']['payment_method']['settings']['payment_method']['settings']['server'];
+  $params = array(
+    'server_scheme' => $settings['server_scheme'],
+    'server_host' => $settings['server_host'],
+    'server_port' => $settings['server_port'],
+    'server_username' => $settings['server_username'],
+    'server_password' => $settings['server_password'],
+    'server_key_file' => ''
+  );
+
+  $server = _commerce_coins_get_server($params);
+  if (TRUE !== ($fault = $server->can_connect())) {
+    form_set_error('', t('Unable to access the coins server. Fault: !fault', array('!fault' => $fault)));
+  }
+}
+
+/**
+ * Implements hook_cron()
+ */
+function commerce_coins_cron() {
+  // get the transactions
+  $transactions_list = commerce_payment_transaction_load_multiple(array(), array('status' => 'pending'), TRUE);
+  if (count($transactions_list)) {
+    // order transaction ids by payment method instance
+    $methods = array();
+    foreach($transactions_list as $transaction) {
+      $methods[$transaction->instance_id][] = $transaction->transaction_id;
+    }
+    // check the payment
+    foreach ($methods as $instance_id => $transactions_ids) {
+      // get the payment method instance
+      $method_instance = commerce_payment_method_instance_load($instance_id);
+      // get the server
+      $server = _commerce_coins_get_server($method_instance['settings']['server']);
+      if (TRUE !== ($fault = $server->can_connect())) {
+        return watchdog('commerce_coins_cron', 'Unable to access coins server. Fault: !fault', $fault);
+      }
+      // check the server
+      foreach ($transactions_ids as $transaction_id) {
+        $transaction = $transactions_list[$transaction_id];
+        $address = $transaction->remote_id;
+        try {
+          $result = $server->getreceivedbyaddress($address, $method_instance['settings']['transaction']['transaction_confirms']);
+        } catch (BitcoinClientException $e) {
+          watchdog('commerce_coins_cron', "Coins server communication failed on getreceivedbyaddress !address with fault string !fault", array("!address" => $address, '!fault' => $e->getMessage()), WATCHDOG_ALERT);
+          continue;
+        }
+        // check the amount
+        if ($result >= $transaction->amount) {
+          $transaction->status = COMMERCE_PAYMENT_STATUS_SUCCESS;
+          commerce_payment_transaction_save($transaction);
+          continue;
+        }
+        // check the timeout
+        try {
+          $label = $server->getaccount($address);
+        } catch (BitcoinClientException $e) {
+          watchdog('uc_bitcoin', "Devcoin server failed on getlabel for !address with fault string !fault", array("!address" => $address, '!fault' => $e->getMessage()), WATCHDOG_ALERT);
+          continue;
+        }
+        $label_data = drupal_json_decode($label);
+        if (time() > ($label_data['timestamp'] + intval(floatval($method_instance['settings']['transaction']['transaction_timeout'] * 60 * 60)))) {
+          $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+          commerce_payment_transaction_save($transaction);
+        }
+      }
+    }
+  }
+}

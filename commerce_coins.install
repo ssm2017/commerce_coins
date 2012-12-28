@@ -1,0 +1,49 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the commerce_coins module.
+ *
+ * @author ssm2017 Binder
+ *
+ * @license GNU/GPL, http://www.gnu.org/licenses/gpl-2.0.html
+ * Commerce coins is free software. This version may have been modified pursuant
+ * to the GNU General Public License, and as distributed it includes or
+ * is derivative of works licensed under the GNU General Public License or
+ * other free or open source software licenses.
+ */
+
+/**
+ * Implementation of hook_requirements()
+ */
+function commerce_coins_requirements($phase) {
+  $requirements = array();
+  // Ensure translations do not break at install time
+  $t = get_t();
+
+  $requirements['commerce_coins'] = array(
+    'title' => $t('Bitcoin-php Library'),
+  );
+
+  $libraries = libraries_get_libraries();
+  if (isset($libraries['bitcoin-php'])) {
+    $bitcon_php_file = DRUPAL_ROOT. libraries_get_path("bitcoin-php", TRUE). '/src/bitcoin.inc';
+    if (file_exists($bitcon_php_file)) {
+      $requirements['commerce_coins']['value'] = $t('Installed');
+      $requirements['commerce_coins']['severity'] = REQUIREMENT_OK;
+      $requirements['commerce_coins']['description'] = $t('The bitcoin-php library exists and the file can be read by the system.');
+    }
+    else {
+      $requirements['commerce_coins']['value'] = $t('Not Installed');
+      $requirements['commerce_coins']['severity'] = REQUIREMENT_ERROR;
+      $requirements['commerce_coins']['description'] = $t('Please check that the Bitcoin-php library file is located at %path.', array('%path' => $bitcon_php_file));
+    }
+  }
+  else {
+    $requirements['commerce_coins']['value'] = $t('Not Installed');
+    $requirements['commerce_coins']['severity'] = REQUIREMENT_ERROR;
+    $requirements['commerce_coins']['description'] = $t('Please install the Bitcoin-php library %url.', array('%url' => 'https://github.com/mikegogulski/bitcoin-php'));
+  }
+
+  return $requirements;
+}
