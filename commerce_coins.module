@@ -43,6 +43,14 @@ function _commerce_coins_get_server($params=NULL) {
       $params['server_port'],
       isset($params['server_key_file']) ? $params['server_key_file'] : '');
   if (is_object($bitcoin_client)) {
+    try {
+      $bitcoin_client->getinfo();
+    }
+    catch (BitcoinClientException $e) {
+      watchdog('commerce_coins', "The server failed on getinfo with fault string: !fault", array('!fault' => $e->getMessage()), WATCHDOG_ALERT);
+      drupal_set_message(t('The coins server can not be reached.'), 'error');
+      return NULL;
+    }
     return $bitcoin_client;
   }
   else {
@@ -70,7 +78,7 @@ function commerce_coins_commerce_currency_info() {
   return array(
     'BTC' => array(
       'code' => 'BTC',
-      'symbol' => 'BTC',
+      'symbol' => 'B⃦',
       'name' => t('Bitcoin'),
       'decimals' => 8,
       'numeric_code' => '',
@@ -125,10 +133,8 @@ function commerce_coins_submit_form($payment_method, $pane_values, $checkout_pan
  */
 function commerce_coins_submit_form_validate($payment_method, $pane_form, $pane_values, $order, $form_parents = array()) {
   // check if the coinsd is alive
-  $server = _commerce_coins_get_server($payment_method['settings']['server']);
-  if (TRUE !== ($fault = $server->can_connect())) {
+  if (is_null($server = _commerce_coins_get_server($payment_method['settings']['server']))) {
     form_set_error('', t('You can not use this payment method now. Please try again later'));
-    watchdog('commerce_coins_order_validate', 'Unable to access coins server. Fault: !fault', $fault);
     return FALSE;
   }
 }
@@ -154,27 +160,31 @@ function commerce_coins_submit_form_submit($payment_method, $pane_form, $pane_va
  *   The name entered on the submission form.
  */
 function commerce_coins_transaction($payment_method, $order, $charge, $name) {
-  $transaction = commerce_payment_transaction_new('commerce_coins', $order->order_id);
-  $transaction->instance_id = $payment_method['instance_id'];
-  $transaction->amount = $charge['amount'];
-  $transaction->currency_code = $charge['currency_code'];
-  $transaction->status = COMMERCE_PAYMENT_STATUS_PENDING;
-  $transaction->message = 'Name: @name';
-  $transaction->message_variables = array('@name' => $name);
-  // get a new address from the coinsd
-  $server = _commerce_coins_get_server($payment_method['settings']['server']);
-  // build the address label
-  $label_data = array(
-    'order_link' => $GLOBALS['base_url']. 'admin/commerce/orders/'. $order->order_id,
-    'timestamp' => time()
-  );
-  $address_label = drupal_json_encode($label_data);
-  // get a new address
-  $address = $server->getNewAddress($address_label);
-  $transaction->remote_id = $address;
-  $transaction->remote_status = '';
+  // get the server
+  if ($server = _commerce_coins_get_server($payment_method['settings']['server'])) {
+    $transaction = commerce_payment_transaction_new('commerce_coins', $order->order_id);
+    $transaction->instance_id = $payment_method['instance_id'];
+    $transaction->amount = $charge['amount'];
+    $transaction->currency_code = $charge['currency_code'];
+    $transaction->status = COMMERCE_PAYMENT_STATUS_PENDING;
+    $transaction->message = 'Name: @name';
+    $transaction->message_variables = array('@name' => $name);
+    // build the address label
+    $label_data = array(
+      'order_link' => $GLOBALS['base_url']. 'admin/commerce/orders/'. $order->order_id,
+      'timestamp' => time()
+    );
+    $address_label = drupal_json_encode($label_data);
+    // get a new address
+    $address = $server->getNewAddress($address_label);
+    $transaction->remote_id = $address;
+    $transaction->remote_status = '';
 
-  commerce_payment_transaction_save($transaction);
+    commerce_payment_transaction_save($transaction);
+  }
+  else {
+    drupal_set_message(t('You can not use this payment method now. Please try again later'), 'error');
+  }
 }
 
 /**
@@ -182,13 +192,17 @@ function commerce_coins_transaction($payment_method, $order, $charge, $name) {
  */
 function commerce_coins_default_settings() {
   return array(
-    'server_scheme' => COMMERCE_COINS_DEFAULT_SERVER_SCHEME,
-    'server_host' => COMMERCE_COINS_DEFAULT_SERVER_HOST,
-    'server_port' => COMMERCE_COINS_DEFAULT_SERVER_PORT,
-    'server_username' => COMMERCE_COINS_DEFAULT_SERVER_USERNAME,
-    'server_password' => COMMERCE_COINS_DEFAULT_SERVER_PASSWORD,
-    'transaction_timeout' => 72,
-    'transaction_confirms' => 1
+    'server' => array(
+      'server_scheme' => COMMERCE_COINS_DEFAULT_SERVER_SCHEME,
+      'server_host' => COMMERCE_COINS_DEFAULT_SERVER_HOST,
+      'server_port' => COMMERCE_COINS_DEFAULT_SERVER_PORT,
+      'server_username' => COMMERCE_COINS_DEFAULT_SERVER_USERNAME,
+      'server_password' => COMMERCE_COINS_DEFAULT_SERVER_PASSWORD,
+    ),
+    'transaction' => array(
+      'transaction_timeout' => 72,
+      'transaction_confirms' => 1
+    )
   );
 }
 
@@ -212,31 +226,35 @@ function commerce_coins_settings_form($settings = array()) {
   $form['server']['server_scheme'] = array(
     '#type' => 'textfield',
     '#title' => t('Scheme'),
-    '#default_value' => $settings['server_scheme'],
-    '#description' => t('Enter the server scheme.')
+    '#default_value' => $settings['server']['server_scheme'],
+    '#description' => t('Enter the server scheme.'),
+    '#size' => 5,
+    '#maxlength' => 5,
   );
   $form['server']['server_host'] = array(
     '#type' => 'textfield',
     '#title' => t('Host'),
-    '#default_value' => $settings['server_host'],
+    '#default_value' => $settings['server']['server_host'],
     '#description' => t('Enter the server host.')
   );
   $form['server']['server_port'] = array(
     '#type' => 'textfield',
     '#title' => t('Port'),
-    '#default_value' => $settings['server_port'],
-    '#description' => t('Enter the server port.')
+    '#default_value' => $settings['server']['server_port'],
+    '#description' => t('Enter the server port.'),
+    '#size' => 5,
+    '#maxlength' => 5,
   );
   $form['server']['server_username'] = array(
     '#type' => 'textfield',
     '#title' => t('Username'),
-    '#default_value' => $settings['server_username'],
+    '#default_value' => $settings['server']['server_username'],
     '#description' => t('Enter the server username.')
   );
   $form['server']['server_password'] = array(
     '#type' => 'textfield',
     '#title' => t('Password'),
-    '#default_value' => $settings['server_password'],
+    '#default_value' => $settings['server']['server_password'],
     '#description' => t('Enter the server password.')
   );
 
@@ -250,13 +268,13 @@ function commerce_coins_settings_form($settings = array()) {
   $form['transaction']['transaction_timeout'] = array(
     '#type' => 'textfield',
     '#title' => t('Transaction timeout (hours)'),
-    '#default_value' => $settings['transaction_timeout'],
+    '#default_value' => $settings['transaction']['transaction_timeout'],
     '#description' => t('Transactions not paid for within this number of hours will be automatically cancelled. Decimals are permitted.'),
   );
   $form['transaction']['transaction_confirms'] = array(
     '#type' => 'textfield',
     '#title' => t('Transaction confirmations'),
-    '#default_value' => $settings['transaction_confirms'],
+    '#default_value' => $settings['transaction']['transaction_confirms'],
     '#description' => t('Minimum number of coins transaction network confirmations required before a payment is considered accepted.'),
   );
 
@@ -290,9 +308,8 @@ function commerce_coins_settings_form_validate(&$form, &$form_state) {
     'server_key_file' => ''
   );
 
-  $server = _commerce_coins_get_server($params);
-  if (TRUE !== ($fault = $server->can_connect())) {
-    form_set_error('', t('Unable to access the coins server. Fault: !fault', array('!fault' => $fault)));
+  if (is_null($server = _commerce_coins_get_server($params))) {
+    form_set_error('', t('Credentials were not saved.'));
   }
 }
 
@@ -313,9 +330,8 @@ function commerce_coins_cron() {
       // get the payment method instance
       $method_instance = commerce_payment_method_instance_load($instance_id);
       // get the server
-      $server = _commerce_coins_get_server($method_instance['settings']['server']);
-      if (TRUE !== ($fault = $server->can_connect())) {
-        return watchdog('commerce_coins_cron', 'Unable to access coins server. Fault: !fault', $fault);
+      if (is_null($server = _commerce_coins_get_server($method_instance['settings']['server']))) {
+        return;
       }
       // check the server
       foreach ($transactions_ids as $transaction_id) {
@@ -337,7 +353,7 @@ function commerce_coins_cron() {
         try {
           $label = $server->getaccount($address);
         } catch (BitcoinClientException $e) {
-          watchdog('uc_bitcoin', "Devcoin server failed on getlabel for !address with fault string !fault", array("!address" => $address, '!fault' => $e->getMessage()), WATCHDOG_ALERT);
+          watchdog('commerce_coins', "Devcoin server failed on getlabel for !address with fault string !fault", array("!address" => $address, '!fault' => $e->getMessage()), WATCHDOG_ALERT);
           continue;
         }
         $label_data = drupal_json_decode($label);
